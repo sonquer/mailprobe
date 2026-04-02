@@ -246,6 +246,106 @@ docker run -p 8080:8080 mailprobe
 
 The image is built with a multi-stage Dockerfile. Final image is Alpine-based and under 10MB. Available for `linux/amd64` and `linux/arm64`.
 
+### Production Setup (auto-restart on boot)
+
+Step-by-step guide to run mailprobe as a persistent service that starts automatically after server reboot.
+
+**1. Pull the image**
+
+```bash
+docker pull ghcr.io/sonquer/mailprobe:latest
+```
+
+**2. Create a directory for the configuration**
+
+```bash
+sudo mkdir -p /opt/mailprobe
+```
+
+**3. Create an environment file**
+
+```bash
+sudo tee /opt/mailprobe/.env > /dev/null <<'EOF'
+PORT=8080
+SMTP_TIMEOUT=10s
+HELO_DOMAIN=probe.example.com
+MAIL_FROM=verify@example.com
+LOG_LEVEL=info
+API_KEYS=your-secret-api-key
+EOF
+
+sudo chmod 600 /opt/mailprobe/.env
+```
+
+**4. Run the container with restart policy**
+
+```bash
+docker run -d \
+  --name mailprobe \
+  --restart unless-stopped \
+  --env-file /opt/mailprobe/.env \
+  -p 8080:8080 \
+  ghcr.io/sonquer/mailprobe:latest
+```
+
+The `--restart unless-stopped` policy ensures the container starts automatically after a Docker daemon restart or server reboot, unless it was explicitly stopped with `docker stop`.
+
+**5. Verify it is running**
+
+```bash
+docker ps --filter name=mailprobe
+curl http://localhost:8080/health
+```
+
+**6. View logs**
+
+```bash
+docker logs mailprobe
+docker logs -f mailprobe  # follow live
+```
+
+**7. Update to a new version**
+
+```bash
+docker pull ghcr.io/sonquer/mailprobe:latest
+docker stop mailprobe
+docker rm mailprobe
+docker run -d \
+  --name mailprobe \
+  --restart unless-stopped \
+  --env-file /opt/mailprobe/.env \
+  -p 8080:8080 \
+  ghcr.io/sonquer/mailprobe:latest
+```
+
+**Alternative: use Docker Compose**
+
+Create a `docker-compose.yml` on your server:
+
+```yaml
+services:
+  mailprobe:
+    image: ghcr.io/sonquer/mailprobe:latest
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    restart: unless-stopped
+```
+
+Then run:
+
+```bash
+docker compose up -d
+```
+
+To update:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
 ## How it Works
 
 ### SMTP Probe Sequence

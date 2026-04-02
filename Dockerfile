@@ -2,11 +2,11 @@ FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
-COPY go.mod ./
+COPY src/go.mod ./
 RUN go mod download
 
-COPY cmd/ cmd/
-COPY internal/ internal/
+COPY src/cmd/ cmd/
+COPY src/internal/ internal/
 
 ARG VERSION=dev
 

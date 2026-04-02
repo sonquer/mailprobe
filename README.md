@@ -38,6 +38,7 @@ docker run -p 8080:8080 ghcr.io/sonquer/mailprobe:latest
 ### Build from Source
 
 ```bash
+cd src
 go build -o mailprobe ./cmd/mailprobe
 ./mailprobe
 ```
@@ -172,6 +173,7 @@ All via environment variables. You can also use a `.env` file (see `.env.example
 Example:
 
 ```bash
+cd src
 PORT=3000 \
 SMTP_TIMEOUT=30s \
 HELO_DOMAIN=probe.example.com \
@@ -184,6 +186,7 @@ API_KEYS=key-abc-123,key-def-456 \
 Or with a `.env` file:
 
 ```bash
+cd src
 cp .env.example .env
 # edit .env with your values
 ./mailprobe
@@ -192,16 +195,20 @@ cp .env.example .env
 ## Project Structure
 
 ```
-cmd/mailprobe/main.go        Entry point, .env loading, config, server, graceful shutdown
-internal/config/config.go     Config struct + Load() from environment variables
-internal/config/dotenv.go     Stdlib-only .env file parser
-internal/smtp/models.go       Result constants + VerifyResult, BatchVerifyResponse structs
-internal/smtp/prober.go       SMTP RCPT TO probing (MX resolution, TCP connect, handshake)
-internal/api/handler.go       HTTP handlers, validation, middleware (auth, logging, recovery)
-internal/version/version.go   Build version info (ldflags + BuildInfo fallback)
-Dockerfile                    Multi-stage build, Alpine-based, <10MB
-.goreleaser.yml               GoReleaser config for cross-platform releases
-.env.example                  Example environment variable configuration
+src/
+  cmd/mailprobe/main.go        Entry point, .env loading, config, server, graceful shutdown
+  internal/config/config.go    Config struct + Load() from environment variables
+  internal/config/dotenv.go    Stdlib-only .env file parser
+  internal/smtp/models.go      Result constants + VerifyResult, BatchVerifyResponse structs
+  internal/smtp/prober.go      SMTP RCPT TO probing (MX resolution, TCP connect, handshake)
+  internal/api/handler.go      HTTP handlers, validation, middleware (auth, logging, recovery)
+  internal/version/version.go  Build version info (ldflags + BuildInfo fallback)
+  go.mod                       Go module definition
+  .env.example                 Example environment variable configuration
+doc/img/mailprobe.png          Project logo
+Dockerfile                     Multi-stage build, Alpine-based, <10MB
+docker-compose.yml             Docker Compose for local development
+.goreleaser.yml                GoReleaser config for cross-platform releases
 ```
 
 ## Docker
@@ -221,6 +228,14 @@ docker run -p 8080:8080 \
   -e API_KEYS=my-secret-key \
   ghcr.io/sonquer/mailprobe:latest
 ```
+
+### Docker Compose
+
+```bash
+docker compose up -d
+```
+
+Configuration is set via environment variables in `docker-compose.yml`. To override locally, create a `docker-compose.override.yml` (gitignored) or use an `.env` file.
 
 ### Build Locally
 
@@ -269,6 +284,7 @@ For emails sharing the same domain, mailprobe:
 ## Testing
 
 ```bash
+cd src
 go test -v -race -cover ./...
 ```
 

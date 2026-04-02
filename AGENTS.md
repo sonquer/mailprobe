@@ -17,19 +17,23 @@ mailprobe is a lightweight email verification API that checks whether an email a
 
 ## Project Structure
 
-Idiomatic Go layout with `cmd/` and `internal/` directories:
+Go source code lives under `src/` with idiomatic `cmd/` and `internal/` directories:
 
 ```
-cmd/mailprobe/main.go       Entry point: .env loading, config, routing, server start, graceful shutdown
-internal/config/config.go    Config struct + Load() from environment variables
-internal/config/dotenv.go    Stdlib-only .env file parser
-internal/smtp/models.go      Result constants + VerifyResult, BatchVerifyResponse structs
-internal/smtp/prober.go      SMTP RCPT TO probing (MX resolution, TCP connect, handshake)
-internal/api/handler.go      HTTP handlers for /verify, /verify/batch, /health, /version + middleware
-internal/version/version.go  Build version info (ldflags + BuildInfo fallback)
-Dockerfile                   Multi-stage build, Alpine-based, <10MB
-.goreleaser.yml              GoReleaser config for cross-platform releases
-.env.example                 Example environment variable configuration
+src/
+  cmd/mailprobe/main.go        Entry point: .env loading, config, routing, server start, graceful shutdown
+  internal/config/config.go    Config struct + Load() from environment variables
+  internal/config/dotenv.go    Stdlib-only .env file parser
+  internal/smtp/models.go      Result constants + VerifyResult, BatchVerifyResponse structs
+  internal/smtp/prober.go      SMTP RCPT TO probing (MX resolution, TCP connect, handshake)
+  internal/api/handler.go      HTTP handlers for /verify, /verify/batch, /health, /version + middleware
+  internal/version/version.go  Build version info (ldflags + BuildInfo fallback)
+  go.mod                       Go module definition
+  .env.example                 Example environment variable configuration
+doc/img/mailprobe.png          Project logo
+Dockerfile                     Multi-stage build, Alpine-based, <10MB
+docker-compose.yml             Docker Compose for local development
+.goreleaser.yml                GoReleaser config for cross-platform releases
 ```
 
 Test files follow Go convention (`*_test.go` alongside source files).
@@ -37,24 +41,28 @@ Test files follow Go convention (`*_test.go` alongside source files).
 ## How to Build
 
 ```
+cd src
 go build -o mailprobe ./cmd/mailprobe
 ```
 
 ## How to Run
 
 ```
+cd src
 PORT=8080 HELO_DOMAIN=probe.example.com ./mailprobe
 ```
 
-Or create a `.env` file (see `.env.example`) and run without environment variables:
+Or create a `.env` file (see `src/.env.example`) and run without environment variables:
 
 ```
+cd src
 ./mailprobe
 ```
 
 ## How to Test
 
 ```
+cd src
 go test -v -race ./...
 ```
 
@@ -66,7 +74,7 @@ All tests use mock SMTP servers on localhost - no external network access needed
 2. **No external dependencies.** Everything uses Go's standard library.
 3. **English only.** All code, variable names, error messages, and documentation must be in English.
 4. **No emojis** in code or documentation.
-5. **Idiomatic Go layout.** `cmd/` for entry points, `internal/` for private packages.
+5. **Idiomatic Go layout.** `src/cmd/` for entry points, `src/internal/` for private packages.
 
 ## Key Design Decisions
 
@@ -88,7 +96,7 @@ Batch requests to the same domain reuse a single SMTP connection. RSET is sent b
 
 ### .env File Support
 
-The stdlib-only `.env` parser (`internal/config/dotenv.go`) loads environment variables from a `.env` file at startup. Real environment variables always take precedence (existing env vars are never overridden).
+The stdlib-only `.env` parser (`src/internal/config/dotenv.go`) loads environment variables from a `.env` file at startup. Real environment variables always take precedence (existing env vars are never overridden).
 
 ### API Key Authentication
 

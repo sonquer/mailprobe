@@ -8,6 +8,7 @@ const (
 	ResultNoMX          = "no_mx"
 )
 
+// VerifyResult represents the outcome of a single email verification probe.
 type VerifyResult struct {
 	Email      string `json:"email"`
 	Result     string `json:"result"`
@@ -17,6 +18,8 @@ type VerifyResult struct {
 	DurationMs int64  `json:"duration_ms"`
 }
 
+// BatchVerifyResponse represents the aggregated result of verifying multiple
+// email addresses, including per-address results and shared domain metadata.
 type BatchVerifyResponse struct {
 	Results         []VerifyResult `json:"results"`
 	Domain          string         `json:"domain"`

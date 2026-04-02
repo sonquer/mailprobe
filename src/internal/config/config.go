@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// Config holds the application configuration loaded from environment variables.
 type Config struct {
 	Port        string
 	SMTPTimeout time.Duration
@@ -16,6 +17,8 @@ type Config struct {
 	APIKeys     []string
 }
 
+// Load reads configuration from environment variables and returns a Config with
+// sensible defaults for any values not set.
 func Load() Config {
 	cfg := Config{
 		Port:        "8080",

@@ -14,33 +14,42 @@ import (
 	"github.com/sonquer/mailprobe/internal/config"
 )
 
+// MXResolver resolves MX records for a given domain.
 type MXResolver interface {
 	LookupMX(ctx context.Context, domain string) ([]*net.MX, error)
 }
 
+// NetMXResolver implements MXResolver using the standard library DNS resolver.
 type NetMXResolver struct{}
 
+// LookupMX resolves MX records for the given domain using the system DNS resolver.
 func (r *NetMXResolver) LookupMX(ctx context.Context, domain string) ([]*net.MX, error) {
 	resolver := &net.Resolver{}
 	return resolver.LookupMX(ctx, domain)
 }
 
+// Dialer establishes TCP connections with a timeout.
 type Dialer interface {
 	DialTimeout(network, address string, timeout time.Duration) (net.Conn, error)
 }
 
+// NetDialer implements Dialer using the standard library net package.
 type NetDialer struct{}
 
+// DialTimeout opens a TCP connection to the given address with a timeout.
 func (d *NetDialer) DialTimeout(network, address string, timeout time.Duration) (net.Conn, error) {
 	return net.DialTimeout(network, address, timeout)
 }
 
+// Prober performs SMTP RCPT TO probing to verify email addresses. It uses
+// dependency-injected MXResolver and Dialer to allow testing without network access.
 type Prober struct {
 	Config   config.Config
 	Resolver MXResolver
 	Dialer   Dialer
 }
 
+// NewProber creates a Prober with production MX resolver and TCP dialer.
 func NewProber(cfg config.Config) *Prober {
 	return &Prober{
 		Config:   cfg,
@@ -49,6 +58,7 @@ func NewProber(cfg config.Config) *Prober {
 	}
 }
 
+// ResolveMX returns the hostname of the highest-priority MX record for the given domain.
 func (p *Prober) ResolveMX(ctx context.Context, domain string) (string, error) {
 	records, err := p.Resolver.LookupMX(ctx, domain)
 	if err != nil {
@@ -69,6 +79,8 @@ func (p *Prober) ResolveMX(ctx context.Context, domain string) (string, error) {
 	return host, nil
 }
 
+// Probe verifies a single email address by connecting to the domain's MX server,
+// performing an SMTP handshake, checking for catch-all, and issuing RCPT TO.
 func (p *Prober) Probe(ctx context.Context, email string) VerifyResult {
 	start := time.Now()
 
@@ -147,6 +159,8 @@ func (p *Prober) Probe(ctx context.Context, email string) VerifyResult {
 	}
 }
 
+// ProbeBatch verifies multiple email addresses, grouping them by domain to reuse
+// SMTP connections and MX resolution. Results are returned in the original input order.
 func (p *Prober) ProbeBatch(ctx context.Context, emails []string) BatchVerifyResponse {
 	start := time.Now()
 
@@ -448,12 +462,14 @@ func (p *Prober) detectCatchAll(conn net.Conn, domain string) bool {
 	return code == 250
 }
 
+// GenerateRandomUser returns a random username for catch-all detection probes.
 func GenerateRandomUser() string {
 	b := make([]byte, 4)
 	rand.Read(b)
 	return fmt.Sprintf("zxqj_%x", b)
 }
 
+// ClassifyCode maps an SMTP response code to a verification result string.
 func ClassifyCode(code int) string {
 	switch {
 	case code == 250:

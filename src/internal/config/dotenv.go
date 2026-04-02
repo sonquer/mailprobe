@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+// LoadDotenv reads a .env file at the given path and sets environment variables
+// for any keys that are not already present in the environment.
 func LoadDotenv(path string) error {
 	f, err := os.Open(path)
 	if err != nil {

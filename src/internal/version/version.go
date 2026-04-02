@@ -34,12 +34,14 @@ func init() {
 	}
 }
 
+// Info holds the build version, commit hash, and build date.
 type Info struct {
 	Version string `json:"version"`
 	Commit  string `json:"commit"`
 	Date    string `json:"date"`
 }
 
+// Get returns the current build version information.
 func Get() Info {
 	return Info{
 		Version: Version,

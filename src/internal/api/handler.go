@@ -13,30 +13,37 @@ import (
 
 const maxBatchSize = 50
 
+// VerifyRequest is the JSON request body for the POST /verify endpoint.
 type VerifyRequest struct {
 	Email string `json:"email"`
 }
 
+// BatchVerifyRequest is the JSON request body for the POST /verify/batch endpoint.
 type BatchVerifyRequest struct {
 	Emails []string `json:"emails"`
 }
 
+// ErrorResponse is the JSON response body returned for all error responses.
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
+// HealthResponse is the JSON response body for the GET /health endpoint.
 type HealthResponse struct {
 	Status string `json:"status"`
 }
 
+// Handler holds HTTP handlers for the mailprobe API.
 type Handler struct {
 	prober *smtp.Prober
 }
 
+// NewHandler creates a Handler backed by the given SMTP prober.
 func NewHandler(prober *smtp.Prober) *Handler {
 	return &Handler{prober: prober}
 }
 
+// RegisterRoutes binds all API endpoint handlers to the given ServeMux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/verify", h.handleVerify)
 	mux.HandleFunc("/verify/batch", h.handleBatchVerify)
@@ -126,6 +133,8 @@ func (h *Handler) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, version.Get())
 }
 
+// ValidateEmail checks that the given string is a valid email address format
+// with a local part, @ sign, and a domain containing at least one dot.
 func ValidateEmail(email string) error {
 	if email == "" {
 		return &ValidationError{"email must not be empty"}
@@ -140,10 +149,12 @@ func ValidateEmail(email string) error {
 	return nil
 }
 
+// ValidationError represents an email validation failure.
 type ValidationError struct {
 	Msg string
 }
 
+// Error returns the validation error message.
 func (e *ValidationError) Error() string {
 	return e.Msg
 }
@@ -163,6 +174,8 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, ErrorResponse{Error: msg})
 }
 
+// LoggingMiddleware wraps an http.Handler to log each request's method, path,
+// status code, and duration.
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -177,6 +190,8 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// RecoveryMiddleware wraps an http.Handler to recover from panics and return
+// a 500 Internal Server Error response instead of crashing the server.
 func RecoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -189,6 +204,10 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// AuthMiddleware wraps an http.Handler to require a valid API key in the
+// X-API-Key header. If keys is empty, authentication is disabled and the
+// handler is returned unwrapped. The /health and /version endpoints always
+// bypass authentication.
 func AuthMiddleware(keys []string, next http.Handler) http.Handler {
 	if len(keys) == 0 {
 		return next

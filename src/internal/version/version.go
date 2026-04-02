@@ -11,7 +11,7 @@ var (
 )
 
 func init() {
-	if Version != "dev" {
+	if Commit != "unknown" && Date != "unknown" {
 		return
 	}
 
@@ -23,13 +23,17 @@ func init() {
 	for _, s := range info.Settings {
 		switch s.Key {
 		case "vcs.revision":
-			if len(s.Value) > 7 {
-				Commit = s.Value[:7]
-			} else {
-				Commit = s.Value
+			if Commit == "unknown" {
+				if len(s.Value) > 7 {
+					Commit = s.Value[:7]
+				} else {
+					Commit = s.Value
+				}
 			}
 		case "vcs.time":
-			Date = s.Value
+			if Date == "unknown" {
+				Date = s.Value
+			}
 		}
 	}
 }

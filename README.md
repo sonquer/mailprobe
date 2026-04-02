@@ -1,5 +1,17 @@
 # mailprobe
 
+<p align="center">
+  <img src="doc/img/mailprobe.png" alt="mailprobe" height="256px" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/sonquer/mailprobe/actions/workflows/ci.yml"><img src="https://github.com/sonquer/mailprobe/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/sonquer/mailprobe/releases/latest"><img src="https://img.shields.io/github/v/release/sonquer/mailprobe" alt="Release" /></a>
+  <a href="https://goreportcard.com/report/github.com/sonquer/mailprobe"><img src="https://goreportcard.com/badge/github.com/sonquer/mailprobe" alt="Go Report Card" /></a>
+  <a href="https://github.com/sonquer/mailprobe/blob/main/LICENSE"><img src="https://img.shields.io/github/license/sonquer/mailprobe" alt="License" /></a>
+  <a href="https://ghcr.io/sonquer/mailprobe"><img src="https://img.shields.io/badge/container-GHCR-blue?logo=docker" alt="Docker" /></a>
+</p>
+
 Lightweight email verification API via SMTP RCPT TO probing. Written in Go, zero dependencies beyond stdlib.
 
 ## What it Does

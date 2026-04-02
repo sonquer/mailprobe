@@ -1,0 +1,49 @@
+version: 2
+
+project_name: mailprobe
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+    - go test -race ./...
+
+builds:
+  - main: ./cmd/mailprobe
+    binary: mailprobe
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/sonquer/mailprobe/internal/version.Version={{.Version}}
+      - -X github.com/sonquer/mailprobe/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/sonquer/mailprobe/internal/version.Date={{.Date}}
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  github:
+    owner: sonquer
+    name: mailprobe
+  draft: false
+  prerelease: auto

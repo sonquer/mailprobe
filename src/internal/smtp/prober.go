@@ -79,8 +79,53 @@ func (p *Prober) ResolveMX(ctx context.Context, domain string) (string, error) {
 	return host, nil
 }
 
+func (p *Prober) isTransient(code int) bool {
+	return code >= 400 && code < 500
+}
+
+func (p *Prober) connectAndHandshake(mx string) (net.Conn, error) {
+	var lastErr error
+	maxAttempts := 1 + p.Config.MaxRetries
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			slog.Debug("retrying connect+handshake", "mx", mx, "attempt", attempt+1)
+			time.Sleep(p.Config.RetryDelay)
+		}
+
+		conn, err := p.connect(mx)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if err := p.handshake(conn); err != nil {
+			conn.Close()
+			lastErr = err
+			continue
+		}
+
+		return conn, nil
+	}
+
+	return nil, lastErr
+}
+
+func (p *Prober) reconnect(mx string) (net.Conn, error) {
+	conn, err := p.connect(mx)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.handshake(conn); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
 // Probe verifies a single email address by connecting to the domain's MX server,
 // performing an SMTP handshake, checking for catch-all, and issuing RCPT TO.
+// Transient failures (4xx codes, connection errors) are retried up to MaxRetries times.
 func (p *Prober) Probe(ctx context.Context, email string) VerifyResult {
 	start := time.Now()
 
@@ -104,9 +149,61 @@ func (p *Prober) Probe(ctx context.Context, email string) VerifyResult {
 		}
 	}
 
-	conn, err := p.connect(mx)
-	if err != nil {
-		slog.Debug("SMTP connection failed", "mx", mx, "error", err)
+	maxAttempts := 1 + p.Config.MaxRetries
+	var lastCode int
+	var lastErr error
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(p.Config.RetryDelay)
+			slog.Debug("retrying single probe", "email", email, "attempt", attempt+1)
+		}
+
+		conn, connErr := p.connectAndHandshake(mx)
+		if connErr != nil {
+			lastErr = connErr
+			continue
+		}
+
+		catchAll := p.detectCatchAll(conn, domain)
+		if catchAll {
+			p.quit(conn)
+			return VerifyResult{
+				Email:      email,
+				Result:     ResultCatchAll,
+				MX:         mx,
+				CatchAll:   true,
+				DurationMs: time.Since(start).Milliseconds(),
+			}
+		}
+
+		code, rcptErr := p.rcptTo(conn, email)
+		p.quit(conn)
+
+		if rcptErr != nil {
+			lastErr = rcptErr
+			continue
+		}
+
+		if p.isTransient(code) {
+			lastCode = code
+			slog.Debug("transient RCPT TO response", "email", email, "code", code, "attempt", attempt+1)
+			continue
+		}
+
+		result := ClassifyCode(code)
+		return VerifyResult{
+			Email:      email,
+			Result:     result,
+			MX:         mx,
+			SMTPCode:   code,
+			CatchAll:   false,
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
+	if lastErr != nil {
+		slog.Debug("probe failed after all retries", "email", email, "error", lastErr)
 		return VerifyResult{
 			Email:      email,
 			Result:     ResultUnknown,
@@ -114,47 +211,12 @@ func (p *Prober) Probe(ctx context.Context, email string) VerifyResult {
 			DurationMs: time.Since(start).Milliseconds(),
 		}
 	}
-	defer p.quit(conn)
 
-	if err := p.handshake(conn); err != nil {
-		slog.Debug("SMTP handshake failed", "mx", mx, "error", err)
-		return VerifyResult{
-			Email:      email,
-			Result:     ResultUnknown,
-			MX:         mx,
-			DurationMs: time.Since(start).Milliseconds(),
-		}
-	}
-
-	catchAll := p.detectCatchAll(conn, domain)
-	if catchAll {
-		return VerifyResult{
-			Email:      email,
-			Result:     ResultCatchAll,
-			MX:         mx,
-			CatchAll:   true,
-			DurationMs: time.Since(start).Milliseconds(),
-		}
-	}
-
-	code, err := p.rcptTo(conn, email)
-	if err != nil {
-		slog.Debug("RCPT TO failed", "email", email, "error", err)
-		return VerifyResult{
-			Email:      email,
-			Result:     ResultUnknown,
-			MX:         mx,
-			DurationMs: time.Since(start).Milliseconds(),
-		}
-	}
-
-	result := ClassifyCode(code)
 	return VerifyResult{
 		Email:      email,
-		Result:     result,
+		Result:     ResultUnknown,
 		MX:         mx,
-		SMTPCode:   code,
-		CatchAll:   false,
+		SMTPCode:   lastCode,
 		DurationMs: time.Since(start).Milliseconds(),
 	}
 }
@@ -240,22 +302,9 @@ func (p *Prober) probeDomain(ctx context.Context, domain string, emails []string
 		return results
 	}
 
-	conn, err := p.connect(mx)
+	conn, err := p.connectAndHandshake(mx)
 	if err != nil {
-		slog.Debug("SMTP connection failed", "mx", mx, "error", err)
-		for _, email := range emails {
-			results = append(results, VerifyResult{
-				Email:  email,
-				Result: ResultUnknown,
-				MX:     mx,
-			})
-		}
-		return results
-	}
-
-	if err := p.handshake(conn); err != nil {
-		conn.Close()
-		slog.Debug("SMTP handshake failed", "mx", mx, "error", err)
+		slog.Debug("SMTP connect+handshake failed after retries", "mx", mx, "error", err)
 		for _, email := range emails {
 			results = append(results, VerifyResult{
 				Email:  email,
@@ -280,44 +329,95 @@ func (p *Prober) probeDomain(ctx context.Context, domain string, emails []string
 		return results
 	}
 
-	for _, email := range emails {
+	for i, email := range emails {
 		probeStart := time.Now()
 
 		code, err := p.rcptTo(conn, email)
-		if err != nil {
-			slog.Debug("RCPT TO failed, attempting reconnect", "email", email, "error", err)
-			conn.Close()
 
-			conn, err = p.connect(mx)
+		needsRetry := err != nil || p.isTransient(code)
+
+		if needsRetry {
 			if err != nil {
-				results = append(results, VerifyResult{
-					Email:      email,
-					Result:     ResultUnknown,
-					MX:         mx,
-					DurationMs: time.Since(probeStart).Milliseconds(),
-				})
-				continue
+				slog.Debug("RCPT TO failed in batch", "email", email, "error", err)
+			} else {
+				slog.Debug("RCPT TO transient response in batch", "email", email, "code", code)
 			}
 
-			if err := p.handshake(conn); err != nil {
+			retried := false
+			for attempt := 0; attempt < p.Config.MaxRetries; attempt++ {
+				time.Sleep(p.Config.RetryDelay)
+				slog.Debug("retrying probe in batch", "email", email, "attempt", attempt+2)
+
 				conn.Close()
-				results = append(results, VerifyResult{
-					Email:      email,
-					Result:     ResultUnknown,
-					MX:         mx,
-					DurationMs: time.Since(probeStart).Milliseconds(),
-				})
-				continue
+				conn, err = p.reconnect(mx)
+				if err != nil {
+					slog.Debug("reconnect failed during batch retry", "mx", mx, "error", err)
+					continue
+				}
+
+				code, err = p.rcptTo(conn, email)
+				if err != nil {
+					slog.Debug("RCPT TO failed after reconnect in batch", "email", email, "error", err)
+					continue
+				}
+
+				if !p.isTransient(code) {
+					retried = true
+					break
+				}
 			}
 
-			code, err = p.rcptTo(conn, email)
-			if err != nil {
-				results = append(results, VerifyResult{
-					Email:      email,
-					Result:     ResultUnknown,
-					MX:         mx,
-					DurationMs: time.Since(probeStart).Milliseconds(),
-				})
+			if !retried {
+				if err != nil {
+					results = append(results, VerifyResult{
+						Email:      email,
+						Result:     ResultUnknown,
+						MX:         mx,
+						DurationMs: time.Since(probeStart).Milliseconds(),
+					})
+				} else {
+					results = append(results, VerifyResult{
+						Email:      email,
+						Result:     ResultUnknown,
+						MX:         mx,
+						SMTPCode:   code,
+						DurationMs: time.Since(probeStart).Milliseconds(),
+					})
+				}
+
+				if err != nil {
+					conn, err = p.reconnect(mx)
+					if err != nil {
+						slog.Debug("reconnect after exhausted retries failed", "mx", mx, "error", err)
+						for _, remaining := range emails[i+1:] {
+							results = append(results, VerifyResult{
+								Email:  remaining,
+								Result: ResultUnknown,
+								MX:     mx,
+							})
+						}
+						return results
+					}
+				}
+
+				if i < len(emails)-1 {
+					if rsetErr := p.rset(conn); rsetErr != nil {
+						slog.Debug("RSET failed after exhausted retries", "error", rsetErr)
+						conn.Close()
+						conn, err = p.reconnect(mx)
+						if err != nil {
+							for _, remaining := range emails[i+1:] {
+								results = append(results, VerifyResult{
+									Email:  remaining,
+									Result: ResultUnknown,
+									MX:     mx,
+								})
+							}
+							return results
+						}
+					}
+				}
+
 				continue
 			}
 		}
@@ -332,7 +432,25 @@ func (p *Prober) probeDomain(ctx context.Context, domain string, emails []string
 			DurationMs: time.Since(probeStart).Milliseconds(),
 		})
 
-		p.rset(conn)
+		if i < len(emails)-1 {
+			if rsetErr := p.rset(conn); rsetErr != nil {
+				slog.Debug("RSET failed, reconnecting", "email", email, "error", rsetErr)
+				conn.Close()
+
+				conn, err = p.reconnect(mx)
+				if err != nil {
+					slog.Debug("reconnect after RSET failure failed", "mx", mx, "error", err)
+					for _, remaining := range emails[i+1:] {
+						results = append(results, VerifyResult{
+							Email:  remaining,
+							Result: ResultUnknown,
+							MX:     mx,
+						})
+					}
+					return results
+				}
+			}
+		}
 	}
 
 	p.quit(conn)
@@ -436,11 +554,30 @@ func (p *Prober) rcptTo(conn net.Conn, email string) (int, error) {
 	return code, nil
 }
 
-func (p *Prober) rset(conn net.Conn) {
+func (p *Prober) rset(conn net.Conn) error {
 	if err := p.sendCommand(conn, "RSET"); err != nil {
-		return
+		return err
 	}
-	p.readResponse(conn)
+	code, _, err := p.readResponse(conn)
+	if err != nil {
+		return err
+	}
+	if code != 250 {
+		return fmt.Errorf("RSET rejected with code: %d", code)
+	}
+
+	if err := p.sendCommand(conn, "MAIL FROM:<"+p.Config.MailFrom+">"); err != nil {
+		return err
+	}
+	code, _, err = p.readResponse(conn)
+	if err != nil {
+		return err
+	}
+	if code != 250 {
+		return fmt.Errorf("MAIL FROM after RSET rejected with code: %d", code)
+	}
+
+	return nil
 }
 
 func (p *Prober) quit(conn net.Conn) {
@@ -457,9 +594,13 @@ func (p *Prober) detectCatchAll(conn net.Conn, domain string) bool {
 		return false
 	}
 
-	p.rset(conn)
+	isCatchAll := code == 250
 
-	return code == 250
+	if err := p.rset(conn); err != nil {
+		slog.Debug("RSET after catch-all detection failed", "domain", domain, "error", err)
+	}
+
+	return isCatchAll
 }
 
 // GenerateRandomUser returns a random username for catch-all detection probes.

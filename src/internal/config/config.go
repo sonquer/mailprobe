@@ -3,6 +3,7 @@ package config
 import (
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,6 +16,8 @@ type Config struct {
 	MailFrom    string
 	LogLevel    slog.Level
 	APIKeys     []string
+	MaxRetries  int
+	RetryDelay  time.Duration
 }
 
 // Load reads configuration from environment variables and returns a Config with
@@ -26,6 +29,8 @@ func Load() Config {
 		HELODomain:  "localhost",
 		MailFrom:    "probe@localhost",
 		LogLevel:    slog.LevelInfo,
+		MaxRetries:  2,
+		RetryDelay:  1 * time.Second,
 	}
 
 	if v := os.Getenv("PORT"); v != "" {
@@ -70,6 +75,24 @@ func Load() Config {
 			if key != "" {
 				cfg.APIKeys = append(cfg.APIKeys, key)
 			}
+		}
+	}
+
+	if v := os.Getenv("MAX_RETRIES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			slog.Warn("invalid MAX_RETRIES, using default", "value", v, "default", cfg.MaxRetries)
+		} else {
+			cfg.MaxRetries = n
+		}
+	}
+
+	if v := os.Getenv("RETRY_DELAY"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			slog.Warn("invalid RETRY_DELAY, using default", "value", v, "default", cfg.RetryDelay)
+		} else {
+			cfg.RetryDelay = d
 		}
 	}
 

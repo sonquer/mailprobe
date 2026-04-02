@@ -20,6 +20,13 @@ type mockSMTPServer struct {
 	catchAll bool
 }
 
+const (
+	stateGreeting = iota
+	stateEhlo
+	stateMailFrom
+	stateRcptTo
+)
+
 func newMockSMTPServer(t *testing.T, catchAll bool, acceptedEmails map[string]int) *mockSMTPServer {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -50,6 +57,7 @@ func (s *mockSMTPServer) handleConnection(conn net.Conn, acceptedEmails map[stri
 	writer := bufio.NewWriter(conn)
 	reader := bufio.NewReader(conn)
 
+	state := stateGreeting
 	fmt.Fprintf(writer, "220 mock.smtp.server ESMTP\r\n")
 	writer.Flush()
 
@@ -64,15 +72,39 @@ func (s *mockSMTPServer) handleConnection(conn net.Conn, acceptedEmails map[stri
 
 		switch {
 		case strings.HasPrefix(cmd, "EHLO"):
+			if state != stateGreeting {
+				fmt.Fprintf(writer, "503 Bad sequence of commands\r\n")
+				writer.Flush()
+				continue
+			}
+			state = stateEhlo
 			fmt.Fprintf(writer, "250-mock.smtp.server\r\n250 OK\r\n")
 			writer.Flush()
 		case strings.HasPrefix(cmd, "HELO"):
+			if state != stateGreeting && state != stateEhlo {
+				fmt.Fprintf(writer, "503 Bad sequence of commands\r\n")
+				writer.Flush()
+				continue
+			}
+			state = stateEhlo
 			fmt.Fprintf(writer, "250 OK\r\n")
 			writer.Flush()
 		case strings.HasPrefix(cmd, "MAIL FROM:"):
+			if state != stateEhlo {
+				fmt.Fprintf(writer, "503 Bad sequence of commands\r\n")
+				writer.Flush()
+				continue
+			}
+			state = stateMailFrom
 			fmt.Fprintf(writer, "250 OK\r\n")
 			writer.Flush()
 		case strings.HasPrefix(cmd, "RCPT TO:"):
+			if state != stateMailFrom && state != stateRcptTo {
+				fmt.Fprintf(writer, "503 Bad sequence of commands\r\n")
+				writer.Flush()
+				continue
+			}
+			state = stateRcptTo
 			email := extractEmail(line)
 
 			if s.catchAll {
@@ -88,6 +120,7 @@ func (s *mockSMTPServer) handleConnection(conn net.Conn, acceptedEmails map[stri
 			}
 			writer.Flush()
 		case strings.HasPrefix(cmd, "RSET"):
+			state = stateEhlo
 			fmt.Fprintf(writer, "250 OK\r\n")
 			writer.Flush()
 		case strings.HasPrefix(cmd, "QUIT"):

@@ -41,6 +41,22 @@ func (d *NetDialer) DialTimeout(network, address string, timeout time.Duration) 
 	return net.DialTimeout(network, address, timeout)
 }
 
+type smtpConn struct {
+	conn   net.Conn
+	reader *bufio.Reader
+}
+
+func newSMTPConn(conn net.Conn) *smtpConn {
+	return &smtpConn{
+		conn:   conn,
+		reader: bufio.NewReader(conn),
+	}
+}
+
+func (sc *smtpConn) Close() {
+	sc.conn.Close()
+}
+
 // Prober performs SMTP RCPT TO probing to verify email addresses. It uses
 // dependency-injected MXResolver and Dialer to allow testing without network access.
 type Prober struct {
@@ -83,7 +99,7 @@ func (p *Prober) isTransient(code int) bool {
 	return code >= 400 && code < 500
 }
 
-func (p *Prober) connectAndHandshake(mx string) (net.Conn, error) {
+func (p *Prober) connectAndHandshake(mx string) (*smtpConn, error) {
 	var lastErr error
 	maxAttempts := 1 + p.Config.MaxRetries
 
@@ -93,34 +109,34 @@ func (p *Prober) connectAndHandshake(mx string) (net.Conn, error) {
 			time.Sleep(p.Config.RetryDelay)
 		}
 
-		conn, err := p.connect(mx)
+		sc, err := p.connect(mx)
 		if err != nil {
 			lastErr = err
 			continue
 		}
 
-		if err := p.handshake(conn); err != nil {
-			conn.Close()
+		if err := p.handshake(sc); err != nil {
+			sc.Close()
 			lastErr = err
 			continue
 		}
 
-		return conn, nil
+		return sc, nil
 	}
 
 	return nil, lastErr
 }
 
-func (p *Prober) reconnect(mx string) (net.Conn, error) {
-	conn, err := p.connect(mx)
+func (p *Prober) reconnect(mx string) (*smtpConn, error) {
+	sc, err := p.connect(mx)
 	if err != nil {
 		return nil, err
 	}
-	if err := p.handshake(conn); err != nil {
-		conn.Close()
+	if err := p.handshake(sc); err != nil {
+		sc.Close()
 		return nil, err
 	}
-	return conn, nil
+	return sc, nil
 }
 
 // Probe verifies a single email address by connecting to the domain's MX server,
@@ -159,15 +175,15 @@ func (p *Prober) Probe(ctx context.Context, email string) VerifyResult {
 			slog.Debug("retrying single probe", "email", email, "attempt", attempt+1)
 		}
 
-		conn, connErr := p.connectAndHandshake(mx)
+		sc, connErr := p.connectAndHandshake(mx)
 		if connErr != nil {
 			lastErr = connErr
 			continue
 		}
 
-		catchAll := p.detectCatchAll(conn, domain)
+		catchAll := p.detectCatchAll(sc, domain)
 		if catchAll {
-			p.quit(conn)
+			p.quit(sc)
 			return VerifyResult{
 				Email:      email,
 				Result:     ResultCatchAll,
@@ -177,8 +193,8 @@ func (p *Prober) Probe(ctx context.Context, email string) VerifyResult {
 			}
 		}
 
-		code, rcptErr := p.rcptTo(conn, email)
-		p.quit(conn)
+		code, rcptErr := p.rcptTo(sc, email)
+		p.quit(sc)
 
 		if rcptErr != nil {
 			lastErr = rcptErr
@@ -302,7 +318,7 @@ func (p *Prober) probeDomain(ctx context.Context, domain string, emails []string
 		return results
 	}
 
-	conn, err := p.connectAndHandshake(mx)
+	sc, err := p.connectAndHandshake(mx)
 	if err != nil {
 		slog.Debug("SMTP connect+handshake failed after retries", "mx", mx, "error", err)
 		for _, email := range emails {
@@ -315,9 +331,9 @@ func (p *Prober) probeDomain(ctx context.Context, domain string, emails []string
 		return results
 	}
 
-	catchAll := p.detectCatchAll(conn, domain)
+	catchAll := p.detectCatchAll(sc, domain)
 	if catchAll {
-		p.quit(conn)
+		p.quit(sc)
 		for _, email := range emails {
 			results = append(results, VerifyResult{
 				Email:    email,
@@ -332,7 +348,7 @@ func (p *Prober) probeDomain(ctx context.Context, domain string, emails []string
 	for i, email := range emails {
 		probeStart := time.Now()
 
-		code, err := p.rcptTo(conn, email)
+		code, err := p.rcptTo(sc, email)
 
 		needsRetry := err != nil || p.isTransient(code)
 
@@ -348,14 +364,14 @@ func (p *Prober) probeDomain(ctx context.Context, domain string, emails []string
 				time.Sleep(p.Config.RetryDelay)
 				slog.Debug("retrying probe in batch", "email", email, "attempt", attempt+2)
 
-				conn.Close()
-				conn, err = p.reconnect(mx)
+				sc.Close()
+				sc, err = p.reconnect(mx)
 				if err != nil {
 					slog.Debug("reconnect failed during batch retry", "mx", mx, "error", err)
 					continue
 				}
 
-				code, err = p.rcptTo(conn, email)
+				code, err = p.rcptTo(sc, email)
 				if err != nil {
 					slog.Debug("RCPT TO failed after reconnect in batch", "email", email, "error", err)
 					continue
@@ -386,7 +402,7 @@ func (p *Prober) probeDomain(ctx context.Context, domain string, emails []string
 				}
 
 				if err != nil {
-					conn, err = p.reconnect(mx)
+					sc, err = p.reconnect(mx)
 					if err != nil {
 						slog.Debug("reconnect after exhausted retries failed", "mx", mx, "error", err)
 						for _, remaining := range emails[i+1:] {
@@ -401,10 +417,10 @@ func (p *Prober) probeDomain(ctx context.Context, domain string, emails []string
 				}
 
 				if i < len(emails)-1 {
-					if rsetErr := p.rset(conn); rsetErr != nil {
+					if rsetErr := p.rset(sc); rsetErr != nil {
 						slog.Debug("RSET failed after exhausted retries", "error", rsetErr)
-						conn.Close()
-						conn, err = p.reconnect(mx)
+						sc.Close()
+						sc, err = p.reconnect(mx)
 						if err != nil {
 							for _, remaining := range emails[i+1:] {
 								results = append(results, VerifyResult{
@@ -433,11 +449,11 @@ func (p *Prober) probeDomain(ctx context.Context, domain string, emails []string
 		})
 
 		if i < len(emails)-1 {
-			if rsetErr := p.rset(conn); rsetErr != nil {
+			if rsetErr := p.rset(sc); rsetErr != nil {
 				slog.Debug("RSET failed, reconnecting", "email", email, "error", rsetErr)
-				conn.Close()
+				sc.Close()
 
-				conn, err = p.reconnect(mx)
+				sc, err = p.reconnect(mx)
 				if err != nil {
 					slog.Debug("reconnect after RSET failure failed", "mx", mx, "error", err)
 					for _, remaining := range emails[i+1:] {
@@ -453,22 +469,25 @@ func (p *Prober) probeDomain(ctx context.Context, domain string, emails []string
 		}
 	}
 
-	p.quit(conn)
+	p.quit(sc)
 	return results
 }
 
-func (p *Prober) connect(mx string) (net.Conn, error) {
+func (p *Prober) connect(mx string) (*smtpConn, error) {
 	addr := mx + ":25"
-	return p.Dialer.DialTimeout("tcp", addr, p.Config.SMTPTimeout)
+	conn, err := p.Dialer.DialTimeout("tcp", addr, p.Config.SMTPTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return newSMTPConn(conn), nil
 }
 
-func (p *Prober) readResponse(conn net.Conn) (int, string, error) {
-	conn.SetReadDeadline(time.Now().Add(p.Config.SMTPTimeout))
-	reader := bufio.NewReader(conn)
+func (p *Prober) readResponse(sc *smtpConn) (int, string, error) {
+	sc.conn.SetReadDeadline(time.Now().Add(p.Config.SMTPTimeout))
 
 	var fullResponse string
 	for {
-		line, err := reader.ReadString('\n')
+		line, err := sc.reader.ReadString('\n')
 		if err != nil {
 			return 0, fullResponse, err
 		}
@@ -494,14 +513,14 @@ func (p *Prober) readResponse(conn net.Conn) (int, string, error) {
 	return code, fullResponse, nil
 }
 
-func (p *Prober) sendCommand(conn net.Conn, cmd string) error {
-	conn.SetWriteDeadline(time.Now().Add(p.Config.SMTPTimeout))
-	_, err := fmt.Fprintf(conn, "%s\r\n", cmd)
+func (p *Prober) sendCommand(sc *smtpConn, cmd string) error {
+	sc.conn.SetWriteDeadline(time.Now().Add(p.Config.SMTPTimeout))
+	_, err := fmt.Fprintf(sc.conn, "%s\r\n", cmd)
 	return err
 }
 
-func (p *Prober) handshake(conn net.Conn) error {
-	code, _, err := p.readResponse(conn)
+func (p *Prober) handshake(sc *smtpConn) error {
+	code, _, err := p.readResponse(sc)
 	if err != nil {
 		return fmt.Errorf("reading greeting: %w", err)
 	}
@@ -509,18 +528,18 @@ func (p *Prober) handshake(conn net.Conn) error {
 		return fmt.Errorf("unexpected greeting code: %d", code)
 	}
 
-	if err := p.sendCommand(conn, "EHLO "+p.Config.HELODomain); err != nil {
+	if err := p.sendCommand(sc, "EHLO "+p.Config.HELODomain); err != nil {
 		return fmt.Errorf("sending EHLO: %w", err)
 	}
-	code, _, err = p.readResponse(conn)
+	code, _, err = p.readResponse(sc)
 	if err != nil {
 		return fmt.Errorf("reading EHLO response: %w", err)
 	}
 	if code != 250 {
-		if err := p.sendCommand(conn, "HELO "+p.Config.HELODomain); err != nil {
+		if err := p.sendCommand(sc, "HELO "+p.Config.HELODomain); err != nil {
 			return fmt.Errorf("sending HELO: %w", err)
 		}
-		code, _, err = p.readResponse(conn)
+		code, _, err = p.readResponse(sc)
 		if err != nil {
 			return fmt.Errorf("reading HELO response: %w", err)
 		}
@@ -529,10 +548,10 @@ func (p *Prober) handshake(conn net.Conn) error {
 		}
 	}
 
-	if err := p.sendCommand(conn, "MAIL FROM:<"+p.Config.MailFrom+">"); err != nil {
+	if err := p.sendCommand(sc, "MAIL FROM:<"+p.Config.MailFrom+">"); err != nil {
 		return fmt.Errorf("sending MAIL FROM: %w", err)
 	}
-	code, _, err = p.readResponse(conn)
+	code, _, err = p.readResponse(sc)
 	if err != nil {
 		return fmt.Errorf("reading MAIL FROM response: %w", err)
 	}
@@ -543,22 +562,22 @@ func (p *Prober) handshake(conn net.Conn) error {
 	return nil
 }
 
-func (p *Prober) rcptTo(conn net.Conn, email string) (int, error) {
-	if err := p.sendCommand(conn, "RCPT TO:<"+email+">"); err != nil {
+func (p *Prober) rcptTo(sc *smtpConn, email string) (int, error) {
+	if err := p.sendCommand(sc, "RCPT TO:<"+email+">"); err != nil {
 		return 0, err
 	}
-	code, _, err := p.readResponse(conn)
+	code, _, err := p.readResponse(sc)
 	if err != nil {
 		return 0, err
 	}
 	return code, nil
 }
 
-func (p *Prober) rset(conn net.Conn) error {
-	if err := p.sendCommand(conn, "RSET"); err != nil {
+func (p *Prober) rset(sc *smtpConn) error {
+	if err := p.sendCommand(sc, "RSET"); err != nil {
 		return err
 	}
-	code, _, err := p.readResponse(conn)
+	code, _, err := p.readResponse(sc)
 	if err != nil {
 		return err
 	}
@@ -566,10 +585,10 @@ func (p *Prober) rset(conn net.Conn) error {
 		return fmt.Errorf("RSET rejected with code: %d", code)
 	}
 
-	if err := p.sendCommand(conn, "MAIL FROM:<"+p.Config.MailFrom+">"); err != nil {
+	if err := p.sendCommand(sc, "MAIL FROM:<"+p.Config.MailFrom+">"); err != nil {
 		return err
 	}
-	code, _, err = p.readResponse(conn)
+	code, _, err = p.readResponse(sc)
 	if err != nil {
 		return err
 	}
@@ -580,23 +599,23 @@ func (p *Prober) rset(conn net.Conn) error {
 	return nil
 }
 
-func (p *Prober) quit(conn net.Conn) {
-	p.sendCommand(conn, "QUIT")
-	conn.Close()
+func (p *Prober) quit(sc *smtpConn) {
+	p.sendCommand(sc, "QUIT")
+	sc.Close()
 }
 
-func (p *Prober) detectCatchAll(conn net.Conn, domain string) bool {
+func (p *Prober) detectCatchAll(sc *smtpConn, domain string) bool {
 	randomUser := GenerateRandomUser()
 	randomEmail := randomUser + "@" + domain
 
-	code, err := p.rcptTo(conn, randomEmail)
+	code, err := p.rcptTo(sc, randomEmail)
 	if err != nil {
 		return false
 	}
 
 	isCatchAll := code == 250
 
-	if err := p.rset(conn); err != nil {
+	if err := p.rset(sc); err != nil {
 		slog.Debug("RSET after catch-all detection failed", "domain", domain, "error", err)
 	}
 
